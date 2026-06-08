@@ -54,7 +54,7 @@ If you get the error `nvml.h: No such file or directory`, try adding `-I/path/to
 
 ## Usage
 
-By default, the program runs in a continuously refreshing table containing all temperature data.
+By default, the program runs in a continuously refreshing table containing temperature and fan speed data.
 
 ```
 sudo ./gputemps
@@ -82,11 +82,12 @@ sudo ./gputemps --json --device 1 --once
   - `core`: Core temperature in Celsius.
   - `junction`: Junction (hotspot) temperature in Celsius.
   - `vram`: VRAM temperature in Celsius.
+  - `fan`: Fan speed as a percentage (0–100), or `null` if unavailable on the GPU.
 
 #### Example:
 
 ```json
-{"timestamp":1678886400,"gpus":[{"index":0,"core":55,"junction":68,"vram":72}]}
+{"timestamp":1678886400,"gpus":[{"index":0,"core":55,"junction":68,"vram":72,"fan":42}]}
 ```
 
 <br>

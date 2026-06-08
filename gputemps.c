@@ -67,6 +67,8 @@ typedef struct {
     uint32_t gpu_temp;
     uint32_t junction_temp;
     uint32_t vram_temp;
+    unsigned int fan_speed;
+    int fan_valid;
 } GpuDevice;
 
 static int check_root_privileges(void) {
@@ -133,7 +135,7 @@ static const char* get_temp_color(uint32_t temp, uint32_t warn, uint32_t danger)
 }
 
 static void print_gpu_info(Context *ctx, unsigned int index, GpuDevice *gpu) {
-    buffer_append(ctx, "%u %s %s%3u°C%s  %s %s%3u°C%s  %s %s%3u°C%s  %s\n",
+    buffer_append(ctx, "%u %s %s%3u°C%s  %s %s%3u°C%s  %s %s%3u°C%s  %s ",
         index, SEPARATOR,
         get_temp_color(gpu->gpu_temp, GPU_TEMP_WARN, GPU_TEMP_DANGER),
         gpu->gpu_temp, COLOR_RESET, SEPARATOR,
@@ -141,6 +143,10 @@ static void print_gpu_info(Context *ctx, unsigned int index, GpuDevice *gpu) {
         gpu->junction_temp, COLOR_RESET, SEPARATOR,
         get_temp_color(gpu->vram_temp, VRAM_TEMP_WARN, VRAM_TEMP_DANGER),
         gpu->vram_temp, COLOR_RESET, SEPARATOR);
+    if (gpu->fan_valid)
+        buffer_append(ctx, "%3u%% %s\n", gpu->fan_speed, SEPARATOR);
+    else
+        buffer_append(ctx, " N/A %s\n", SEPARATOR);
 }
 
 static int init_pci(Context *ctx) {
@@ -219,6 +225,17 @@ static int get_gpu_temp(nvmlDevice_t device, uint32_t *temp) {
     return 0;
 }
 
+/* 0 = success, 1 = unsupported/unavailable, -1 = error */
+static int get_fan_speed(nvmlDevice_t device, unsigned int *speed) {
+    nvmlReturn_t result = nvmlDeviceGetFanSpeed(device, speed);
+    if (result == NVML_SUCCESS)
+        return 0;
+    if (result == NVML_ERROR_NOT_SUPPORTED || result == NVML_ERROR_NO_PERMISSION)
+        return 1;
+    fprintf(stderr, "Failed to get fan speed: %s\n", nvmlErrorString(result));
+    return -1;
+}
+
 static int read_register_temp(struct pci_dev *dev, uint32_t offset, uint32_t *temp) {
     int fd = open(MEM_PATH, O_RDWR | O_SYNC);
     if (fd < 0) {
@@ -255,6 +272,18 @@ static int get_gpu_temps(Context *ctx, unsigned int index, GpuDevice *gpu) {
         (get_device_pci_info(ctx, gpu->device, &gpu->pci_info) < 0))
         return -1;
 
+    gpu->fan_valid = 0;
+    {
+        unsigned int fan = 0;
+        int fan_result = get_fan_speed(gpu->device, &fan);
+        if (fan_result == 0) {
+            gpu->fan_speed = fan;
+            gpu->fan_valid = 1;
+        } else if (fan_result < 0) {
+            return -1;
+        }
+    }
+
     for (struct pci_dev *dev = ctx->pacc->devices; dev; dev = dev->next) {
         pci_fill_info(dev, PCI_FILL_IDENT | PCI_FILL_BASES);
 
@@ -286,8 +315,8 @@ static int monitor_temperatures_table(Context *ctx) {
     ctx->buffer_pos = 0;
     refresh_counter = refresh_counter == 0 ? 1 : 0;
     buffer_append(ctx, "\n%s", refresh_counter == 0 ? "* " : "  ");
-    buffer_append(ctx, "%s  CORE  %s  JUNC  %s  VRAM  %s\n",
-      SEPARATOR, SEPARATOR, SEPARATOR, SEPARATOR);
+    buffer_append(ctx, "%s  CORE  %s  JUNC  %s  VRAM  %s  FAN  %s\n",
+      SEPARATOR, SEPARATOR, SEPARATOR, SEPARATOR, SEPARATOR);
 
     for (unsigned int i = 0; i < ctx->monitor_count; i++) {
         unsigned int index = (ctx->selected_device >= 0) ? (unsigned int)ctx->selected_device : i;
@@ -316,8 +345,12 @@ static int monitor_temperatures_json(Context *ctx) {
         if (i > 0) {
             buffer_append(ctx, ",");
         }
-        buffer_append(ctx, "{\"index\":%u,\"core\":%u,\"junction\":%u,\"vram\":%u}",
+        buffer_append(ctx, "{\"index\":%u,\"core\":%u,\"junction\":%u,\"vram\":%u",
                index, gpu.gpu_temp, gpu.junction_temp, gpu.vram_temp);
+        if (gpu.fan_valid)
+            buffer_append(ctx, ",\"fan\":%u}", gpu.fan_speed);
+        else
+            buffer_append(ctx, ",\"fan\":null}");
     }
     buffer_append(ctx, "]}");
     printf("%s\n", ctx->output_buffer);
