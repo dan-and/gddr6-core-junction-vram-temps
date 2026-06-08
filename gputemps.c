@@ -51,6 +51,8 @@ typedef enum {
 typedef struct {
     nvmlReturn_t result;
     unsigned int device_count;
+    int selected_device;  /* -1 = all devices, otherwise CUDA device index */
+    unsigned int monitor_count;  /* number of devices to monitor (1 or device_count) */
     int initialized;
     struct pci_access *pacc;
     char output_buffer[BUFFER_SIZE];
@@ -174,6 +176,16 @@ static int get_device_count(Context *ctx) {
         fprintf(stderr, "No NVIDIA GPUs found\n");
         return -1;
     }
+    if (ctx->selected_device >= 0) {
+        if ((unsigned int)ctx->selected_device >= ctx->device_count) {
+            fprintf(stderr, "Invalid device index %d: only %u GPU(s) available (0..%u)\n",
+                ctx->selected_device, ctx->device_count, ctx->device_count - 1);
+            return -1;
+        }
+        ctx->monitor_count = 1;
+    } else {
+        ctx->monitor_count = ctx->device_count;
+    }
     return 0;
 }
 
@@ -277,10 +289,11 @@ static int monitor_temperatures_table(Context *ctx) {
     buffer_append(ctx, "%s  CORE  %s  JUNC  %s  VRAM  %s\n",
       SEPARATOR, SEPARATOR, SEPARATOR, SEPARATOR);
 
-    for (unsigned int i = 0; i < ctx->device_count; i++) {
+    for (unsigned int i = 0; i < ctx->monitor_count; i++) {
+        unsigned int index = (ctx->selected_device >= 0) ? (unsigned int)ctx->selected_device : i;
         GpuDevice gpu = {0};
-        if (get_gpu_temps(ctx, i, &gpu) != 0) return -1;
-        print_gpu_info(ctx, i, &gpu);
+        if (get_gpu_temps(ctx, index, &gpu) != 0) return -1;
+        print_gpu_info(ctx, index, &gpu);
         valid_readings++;
     }
 
@@ -295,15 +308,16 @@ static int monitor_temperatures_json(Context *ctx) {
     time_t now = time(NULL);
     buffer_append(ctx, "{\"timestamp\":%ld,\"gpus\":[", (long)now);
 
-    for (unsigned int i = 0; i < ctx->device_count; i++) {
+    for (unsigned int i = 0; i < ctx->monitor_count; i++) {
+        unsigned int index = (ctx->selected_device >= 0) ? (unsigned int)ctx->selected_device : i;
         GpuDevice gpu = {0};
-        if (get_gpu_temps(ctx, i, &gpu) != 0) return -1;
+        if (get_gpu_temps(ctx, index, &gpu) != 0) return -1;
 
         if (i > 0) {
             buffer_append(ctx, ",");
         }
         buffer_append(ctx, "{\"index\":%u,\"core\":%u,\"junction\":%u,\"vram\":%u}",
-               i, gpu.gpu_temp, gpu.junction_temp, gpu.vram_temp);
+               index, gpu.gpu_temp, gpu.junction_temp, gpu.vram_temp);
     }
     buffer_append(ctx, "]}");
     printf("%s\n", ctx->output_buffer);
@@ -344,7 +358,7 @@ static int run_monitoring_loop(Context *ctx) {
         if (handle_input(REFRESH_DURATION * 1000)) break;
     }
 
-    printf("\033[%dB", ctx->device_count + 2);
+    printf("\033[%dB", ctx->monitor_count + 2);
     printf("\n");
     fflush(stdout);
     return 0;
@@ -363,25 +377,48 @@ static void print_usage(const char *prog) {
         "Usage: %s [OPTIONS]\n"
         "\n"
         "Options:\n"
+        "  --device N        Monitor only CUDA device N (default: all devices)\n"
         "  --json           Output temperatures in JSON format\n"
         "  --once           Output temperatures once\n"
         "  --help           Show this help message and exit\n"
         "\n"
         "Examples:\n"
         "  %s                Display and update table of GPU temperatures\n"
+        "  %s --device 0     Monitor only GPU 0\n"
         "  %s --json         Continuously output GPU temperatures in JSON format\n"
+        "  %s --json --device 1  Output temperatures for GPU 1 only in JSON format\n"
         "  %s --once         Output temperatures once in table format\n"
         "  %s --json --once  Output temperatures once in JSON format\n",
-        prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog);
+}
+
+static int parse_device_arg(const char *s, int *out) {
+    char *end;
+    long n = strtol(s, &end, 10);
+    if (end == s || *end != '\0' || n < 0 || n > 0x7fffffff) return -1;
+    *out = (int)n;
+    return 0;
 }
 
 int main(int argc, char *argv[]) {
     Context ctx = {0};
     ctx.output_format = FORMAT_TABLE;
     ctx.output_mode = MODE_CONTINUOUS;
+    ctx.selected_device = -1;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--json") == 0) {
+        if (strcmp(argv[i], "--device") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "--device requires an argument (CUDA device number)\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (parse_device_arg(argv[i + 1], &ctx.selected_device) != 0) {
+                fprintf(stderr, "Invalid --device argument: %s (expected non-negative integer)\n", argv[i + 1]);
+                return 1;
+            }
+            i++;
+        } else if (strcmp(argv[i], "--json") == 0) {
             ctx.output_format = FORMAT_JSON;
         } else if (strcmp(argv[i], "--once") == 0) {
             ctx.output_mode = MODE_ONCE;
@@ -419,7 +456,7 @@ int main(int argc, char *argv[]) {
         result = run_monitoring_loop(&ctx);
     } else { // FORMAT_TABLE && MODE_ONCE
         result = monitor_temperatures_table(&ctx);
-        printf("\033[%dB\n", ctx.device_count + 2);
+        printf("\033[%dB\n", ctx.monitor_count + 2);
     }
 
     cleanup_context(&ctx);

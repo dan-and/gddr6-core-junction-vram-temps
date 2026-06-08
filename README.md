@@ -63,8 +63,16 @@ Press any key or `CTRL+C` to exit.
 
 ### Optional CLI arguments:
 
+- `--device N`: Monitor only CUDA device `N` (default: all devices). Device indices are zero-based.
 - `--once`: Output temperatures a single time and then exit.
 - `--json`: Output temperatures in JSONL format, one object per line.
+
+#### Examples:
+
+```
+sudo ./gputemps --device 0
+sudo ./gputemps --json --device 1 --once
+```
 
 ### JSON Format
 
